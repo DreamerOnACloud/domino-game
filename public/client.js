@@ -347,6 +347,12 @@ function overlay() {
     card.appendChild(b);
     const ready = [room.rematch['0'], room.rematch['1']].filter(Boolean).length;
     if (ready) card.appendChild(el('p', '', `${ready}/2 ready`));
+
+    // leaving the table from here too, same hold as everywhere else
+    const q = el('button', 'quit quit-big', null);
+    q.appendChild(el('span', 'lbl', 'QUIT GAME'));
+    wireQuit(q);
+    card.insertBefore(q, b.nextSibling);
   }
   box.appendChild(card);
   document.body.appendChild(box);
@@ -610,7 +616,7 @@ function leaveToHome() {
 }
 
 async function quitGame() {
-  if (busy || !room || room.over || hasQuit()) return;
+  if (busy || !room || hasQuit()) return;
   const seat = mySeat();
   if (seat < 0) return;
   busy = true;
@@ -653,7 +659,7 @@ let holdBtn = null;
 function startHold(btn, e) {
   if (e && e.preventDefault) { try { e.preventDefault(); } catch {} }
   if (quitHold) return;
-  if (room && (room.over || hasQuit())) return;      // nothing left to quit
+  if (room && hasQuit()) return;                     // nothing left to quit
   holdBtn = btn;
   document.documentElement.classList.add('holding-quit');
   btn.classList.add('holding');

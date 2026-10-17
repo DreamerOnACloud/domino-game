@@ -73,6 +73,7 @@ button.ghost{background:transparent;color:var(--gold);border:1px solid rgba(224,
   user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;pointer-events:none}
 /* the lobby one is a primary-sized button, like Create game */
 #btn-quit-lobby{padding:18px 34px;font-size:19px;margin-top:4px}
+.quit.quit-big{padding:18px 34px;font-size:19px;margin-top:10px}
 /* While the button is held, nothing on the page may be selectable: Chrome on
    Android raises its text-selection menu from a long press on nearby text even
    when the button itself is unselectable, and that menu cancels the press. */
