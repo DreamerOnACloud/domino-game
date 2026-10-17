@@ -126,35 +126,51 @@ function subscribe(newCode) {
   localStorage.setItem('dominoCode', code);
   history.replaceState(null, '', '#' + code);
 
-  unsubs.push(onSnapshot(roomRef(), (snap) => {
-    if (!snap.exists()) {
-      report('That game is gone — start a new one');
-      localStorage.removeItem('dominoCode');
-      code = null;
-      return;
-    }
-    room = snap.data();
-    const seat = mySeat();
-    if (seat < 0) {
-      report('That game is already full (two players)');
-      localStorage.removeItem('dominoCode');
-      code = null;
-      return;
-    }
-    if (room.status === 'waiting') {
-      show('lobby');
-      $('#lobby-code').textContent = code;
-      $('#lobby-url').textContent = location.origin + '/#' + code;
-      return;
-    }
-    render();
-    if (room.over && !room.result) settle();
-  }));
+  unsubs.push(onSnapshot(
+    roomRef(),
+    (snap) => {
+      if (!snap.exists()) {
+        report('That game is gone — start a new one');
+        localStorage.removeItem('dominoCode');
+        code = null;
+        return;
+      }
+      room = snap.data();
+      const seat = mySeat();
+      if (seat < 0) {
+        report('That game is already full (two players)');
+        localStorage.removeItem('dominoCode');
+        code = null;
+        return;
+      }
+      if (room.status === 'waiting') {
+        show('lobby');
+        $('#lobby-code').textContent = code;
+        $('#lobby-url').textContent = location.origin + '/' + '#' + code;
+        return;
+      }
+      render();
+      if (room.over && !room.result) settle();
+    },
+    (err) => {
+      // A listener that dies silently is exactly how a view goes stale.
+      console.error('room listener failed', err);
+      report('Lost the connection to the game — retrying');
+      setTimeout(() => { if (code) subscribe(code); }, 1500);
+    },
+  ));
 
-  unsubs.push(onSnapshot(handRef(), (snap) => {
-    hand = snap.exists() ? snap.data() : null;
-    if (room && room.status === 'playing') render();
-  }));
+  unsubs.push(onSnapshot(
+    handRef(),
+    (snap) => {
+      hand = snap.exists() ? snap.data() : null;
+      if (room && room.status === 'playing') render();
+    },
+    (err) => {
+      console.error('hand listener failed', err);
+      setTimeout(() => { if (code) subscribe(code); }, 1500);
+    },
+  ));
 
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'pipTotals'), (snap) => {
     extra.pt = {};
@@ -544,6 +560,22 @@ $('#btn-join').onclick = () => {
   joinRoom(c).catch((e) => report(friendly(e)));
 };
 $('#code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-join').click(); });
+
+// Phones and background tabs get suspended, and a suspended tab stops hearing
+// snapshots. Re-attach the listeners whenever the page comes back, so the view
+// catches up instead of sitting on the snapshot it had when it went away.
+let resyncing = false;
+function resync() {
+  if (resyncing || !code || !uid) return;
+  resyncing = true;
+  subscribe(code);
+  setTimeout(() => { resyncing = false; }, 1000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') resync();
+});
+window.addEventListener('focus', resync);
+window.addEventListener('online', resync);
 
 onAuthStateChanged(auth, (user) => {
   if (!user) { signInAnonymously(auth).catch((e) => report('Sign-in failed: ' + friendly(e))); return; }
