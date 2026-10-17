@@ -577,17 +577,31 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('focus', resync);
 window.addEventListener('online', resync);
 
-onAuthStateChanged(auth, (user) => {
-  if (!user) { signInAnonymously(auth).catch((e) => report('Sign-in failed: ' + friendly(e))); return; }
-  uid = user.uid;
-  const saved = localStorage.getItem('dominoCode') || location.hash.slice(1);
-  if (/^\d{6}$/.test(saved)) {
+// Boot used to hang off onAuthStateChanged: if that callback did not deliver a
+// user (a restored session can race the first sign-in), the app stayed on the
+// home screen with a room already in the URL — no error, no subscribe, so the
+// board never updated. Wait for auth to settle explicitly, then resume.
+async function boot() {
+  try {
+    if (typeof auth.authStateReady === 'function') await auth.authStateReady();
+    if (!auth.currentUser) await signInAnonymously(auth);
+    uid = auth.currentUser.uid;
+
+    const saved = localStorage.getItem('dominoCode') || location.hash.slice(1);
+    if (!/^\d{6}$/.test(saved)) return;
     $('#code-input').value = saved;
-    getDoc(doc(db, 'rooms', saved)).then((snap) => {
-      if (!snap.exists()) { localStorage.removeItem('dominoCode'); return; }
-      const r = snap.data();
-      if (seatOf(r, uid) >= 0) subscribe(saved);          // our room, resume
-      else if (r.status === 'waiting' && r.members['1'] === '') joinRoom(saved).catch(() => {});
-    }).catch(() => {});
+
+    const snap = await getDoc(doc(db, 'rooms', saved));
+    if (!snap.exists()) {
+      localStorage.removeItem('dominoCode');
+      return;
+    }
+    const r = snap.data();
+    if (seatOf(r, uid) >= 0) subscribe(saved);                 // our room: resume
+    else if (r.status === 'waiting' && r.members['1'] === '') await joinRoom(saved);
+    else report('That game is already full (two players)');
+  } catch (e) {
+    report(friendly(e));                                       // never fail silently
   }
-});
+}
+boot();
