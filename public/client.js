@@ -59,6 +59,7 @@ let room = null;           // room document data
 let hand = null;           // { tiles: [...], pips }
 let unsubs = [];
 let selected = null;
+let boardDoc = null;       // rooms/{code}/private/board — the tile chain lives here
 let extra = { pt: {} };    // published pip totals of both players
 let lastBoardLen = -1;
 let lastFreshSeq = -1;
@@ -68,6 +69,7 @@ const roomRef = () => doc(db, 'rooms', code);
 const handRef = () => doc(db, 'rooms', code, 'hands', uid);
 const ptRef = (who) => doc(db, 'rooms', code, 'pipTotals', who);
 const pileRef = () => doc(db, 'rooms', code, 'private', 'pile');
+const boardRef = () => doc(db, 'rooms', code, 'private', 'board');
 
 const seatOf = (r, u) => (r && r.members['0'] === u ? 0 : r && r.members['1'] === u ? 1 : -1);
 const mySeat = () => seatOf(room, uid);
@@ -75,14 +77,15 @@ const oppSeat = () => 1 - mySeat();
 let quitBy = null;                  // '0' | '1' | null — the seat that left
 const hasQuit = () => quitBy !== null;
 
-/** the pure-module shape, rebuilt from the room document */
-function stateFrom(r) {
-  const board = r.board || [];
+/** the pure-module shape, rebuilt from the room document + the board document */
+function stateFrom(r, b) {
+  const bd = b || boardDoc || {};
+  const board = bd.board || [];
   return {
     board,
-    left: board.length ? r.left : null,
-    right: board.length ? r.right : null,
-    seq: r.seq || 0,
+    left: board.length ? bd.left : null,
+    right: board.length ? bd.right : null,
+    seq: bd.seq || 0,
     turn: r.turn,
     passes: r.passes || 0,
     round: r.round || 1,
@@ -92,14 +95,24 @@ function stateFrom(r) {
     matchOver: r.matchOver,
   };
 }
-const toDoc = (s) => ({
-  board: s.board,
+// The room document no longer carries the board. Keeping the tile-chain algebra
+// (set comparisons over up to 28 tiles) in the room's rule made every write to
+// the room pay for it, and the next-round deal — four writes in one transaction
+// — went over the rules engine's expression budget because of it.
+const roomDoc = (s) => ({
+  turn: s.turn,
+  passes: s.passes,
   boardSize: s.board.length,
+  over: s.over,
+  result: s.roundResult,
+});
+const boardFields = (s) => ({
+  board: s.board,
   left: s.board.length ? s.left : -1,
   right: s.board.length ? s.right : -1,
   seq: s.seq,
-  turn: s.turn,
 });
+const emptyBoard = () => ({ board: [], left: -1, right: -1, seq: 0 });
 
 // ---------------------------------------------------------------- screens
 function show(which) {
@@ -157,11 +170,24 @@ function subscribe(newCode) {
       if (room.over && !room.result && !hasQuit()) settle();
       // both players ready to continue: deal the next round
       if (room.over && room.result && !hasQuit() && room.rematch['0'] && room.rematch['1']) startNextRound();
+      catchUpDeal();
     },
     (err) => {
       // A listener that dies silently is exactly how a view goes stale.
       console.error('room listener failed', err);
       report('Lost the connection to the game — retrying');
+      setTimeout(() => { if (code) subscribe(code); }, 1500);
+    },
+  ));
+
+  unsubs.push(onSnapshot(
+    boardRef(),
+    (snap) => {
+      boardDoc = snap.exists() ? snap.data() : null;
+      if (room && room.status === 'playing') render();
+    },
+    (err) => {
+      console.error('board listener failed', err);
       setTimeout(() => { if (code) subscribe(code); }, 1500);
     },
   ));
@@ -197,10 +223,10 @@ function subscribe(newCode) {
 
 // ---------------------------------------------------------------- rendering
 function render() {
-  if (!room || !hand) return;
+  if (!room || !hand || !boardDoc) return;
   show('game');
   const seat = mySeat();
-  const st = stateFrom(room);
+  const st = stateFrom(room, boardDoc);
   const opp = 1 - seat;
 
   $('#score-you').textContent = st.scores[seat];
@@ -264,13 +290,14 @@ function controls(myTurn, playable) {
   c.innerHTML = '';
   if (!room || room.over || hasQuit()) return;
 
+  const bd = boardDoc || emptyBoard();
   if (selected) {
     const ends = [];
-    if (room.boardSize === 0) ends.push({ end: null, label: 'Play' });
+    if (!bd.board.length) ends.push({ end: null, label: 'Play' });
     else {
       const fits = (v) => selected.a === v || selected.b === v;
-      if (fits(room.left)) ends.push({ end: 'left', label: `${room.left} end`, cls: 'left end' });
-      if (fits(room.right)) ends.push({ end: 'right', label: `${room.right} end`, cls: 'right end' });
+      if (fits(bd.left)) ends.push({ end: 'left', label: `${bd.left} end`, cls: 'left end' });
+      if (fits(bd.right)) ends.push({ end: 'right', label: `${bd.right} end`, cls: 'right end' });
     }
     for (const e of ends) {
       const b = el('button', e.cls || '', e.label);
@@ -290,11 +317,11 @@ function controls(myTurn, playable) {
   }
 
   if (myTurn) {
-    if (G.canDraw(stateFrom(room), hand.tiles, new Array(room.boneyardCount || 0))) {
+    if (G.canDraw(stateFrom(room, boardDoc), hand.tiles, new Array(room.boneyardCount || 0))) {
       const b = el('button', '', 'Draw from boneyard');
       b.onclick = () => doDraw();
       c.appendChild(b);
-    } else if (G.canPass(stateFrom(room), hand.tiles, new Array(room.boneyardCount || 0))) {
+    } else if (G.canPass(stateFrom(room, boardDoc), hand.tiles, new Array(room.boneyardCount || 0))) {
       const b = el('button', '', 'Pass');
       b.onclick = () => doPass();
       c.appendChild(b);
@@ -356,7 +383,8 @@ async function createRoom() {
     status: 'waiting',
     members: { '0': uid, '1': '' },
     turn: 0,
-    board: [], boardSize: 0, left: -1, right: -1, seq: 0, passes: 0,
+    passes: 0,
+    boardSize: 0,
     handCounts: { '0': 0, '1': 0 },
     boneyardCount: 0,
     round: 0,
@@ -381,11 +409,13 @@ async function joinRoom(c) {
     const pile = {};
     deal.boneyard.forEach((t, i) => { pile[String(i)] = t; });
 
-    tx.update(ref, {
+    tx.set(ref, {
+      ...r,
       status: 'playing',
       members: { '0': r.members['0'], '1': uid },
       turn: deal.state.turn,
-      board: [], boardSize: 0, left: -1, right: -1, seq: 0, passes: 0,
+      passes: 0,
+      boardSize: 0,
       handCounts: { '0': 7, '1': 7 },
       boneyardCount: 14,
       round: 1,
@@ -396,6 +426,7 @@ async function joinRoom(c) {
     tx.set(doc(db, 'rooms', c, 'hands', r.members['0']), { tiles: deal.hands[0], pips: G.pips(deal.hands[0]), round: 1 });
     tx.set(doc(db, 'rooms', c, 'hands', uid), { tiles: deal.hands[1], pips: G.pips(deal.hands[1]), round: 1 });
     tx.set(doc(db, 'rooms', c, 'private', 'pile'), { top: 0, tiles: pile, round: 1 });
+    tx.set(doc(db, 'rooms', c, 'private', 'board'), { ...emptyBoard(), round: 1 });
   });
   subscribe(c);
 }
@@ -407,8 +438,9 @@ async function playTile(tileId, end) {
     await runTransaction(db, async (tx) => {
       const rs = await tx.get(roomRef());
       const hs = await tx.get(handRef());
+      const bs = await tx.get(boardRef());
       const r = rs.data();
-      const st = stateFrom(r);
+      const st = stateFrom(r, bs.data());
       const seat = seatOf(r, uid);
       const res = G.play(st, hs.data().tiles, seat, tileId, end);
       if (res.err) throw new Error(res.err);
@@ -418,15 +450,21 @@ async function playTile(tileId, end) {
       const dominoed = res.dominoed === true;
       const over = dominoed || res.state.over;
 
-      tx.update(roomRef(), {
-        ...toDoc(res.state),
+      // Full-document set, not a partial update: the rules read fields this
+      // write does not change (scores, members, boardSize), and a partial update
+      // does not hand them those fields — they come back undefined and the
+      // whole rule evaluation fails.
+      tx.set(roomRef(), {
+        ...r,
+        ...roomDoc(res.state),
         handCounts: { ...r.handCounts, [String(seat)]: res.hand.length },
         over,
         result: res.state.roundResult,
         scores: { '0': res.state.scores[0], '1': res.state.scores[1] },
         matchOver: res.state.matchOver,
       });
-      tx.update(handRef(), { tiles: res.hand, pips: G.pips(res.hand) });
+      tx.update(boardRef(), boardFields(res.state));
+      tx.update(handRef(), { tiles: res.hand, pips: G.pips(res.hand), round: r.round });
     });
   } catch (e) {
     report(friendly(e));
@@ -443,18 +481,20 @@ async function doDraw() {
       const rs = await tx.get(roomRef());
       const hs = await tx.get(handRef());
       const ps = await tx.get(pileRef());
+      const bs = await tx.get(boardRef());
       const r = rs.data();
       const pile = ps.data();
       const topTile = pile.tiles[String(pile.top)];
-      const res = G.draw(stateFrom(r), hs.data().tiles, Object.values(pile.tiles).slice(pile.top), seatOf(r, uid));
+      const res = G.draw(stateFrom(r, bs.data()), hs.data().tiles, Object.values(pile.tiles).slice(pile.top), seatOf(r, uid));
       if (res.err) throw new Error(res.err);
 
-      tx.update(roomRef(), {
+      tx.set(roomRef(), {
+        ...r,
         handCounts: { ...r.handCounts, [String(seatOf(r, uid))]: res.hand.length },
         boneyardCount: r.boneyardCount - 1,
       });
-      tx.update(handRef(), { tiles: [...hs.data().tiles, topTile], pips: G.pips([...hs.data().tiles, topTile]) });
-      tx.update(pileRef(), { top: pile.top + 1 });
+      tx.update(handRef(), { tiles: [...hs.data().tiles, topTile], pips: G.pips([...hs.data().tiles, topTile]), round: r.round });
+      tx.update(pileRef(), { top: pile.top + 1, round: r.round });
     });
   } catch (e) {
     report(friendly(e));
@@ -470,12 +510,17 @@ async function doPass() {
     await runTransaction(db, async (tx) => {
       const rs = await tx.get(roomRef());
       const hs = await tx.get(handRef());
+      const bs = await tx.get(boardRef());
       const r = rs.data();
-      const res = G.pass(stateFrom(r), hs.data().tiles, [], seatOf(r, uid));
+      const res = G.pass(stateFrom(r, bs.data()), hs.data().tiles, [], seatOf(r, uid));
       if (res.err) throw new Error(res.err);
-      tx.update(roomRef(), res.blocked
-        ? { over: true, result: null }
-        : { turn: res.state.turn });
+      tx.set(roomRef(), {
+        ...r,
+        over: res.blocked ? true : r.over,
+        result: res.blocked ? null : r.result,
+        turn: res.blocked ? r.turn : res.state.turn,
+        passes: res.state.passes,
+      });
     });
   } catch (e) {
     report(friendly(e));
@@ -521,7 +566,8 @@ async function maybeSettle() {
     }
     const scores = { '0': room.scores['0'], '1': room.scores['1'] };
     if (winner >= 0) scores[String(winner)] += pts;
-    await updateDoc(roomRef(), {
+    await setDoc(roomRef(), {
+      ...room,
       result: { winner, pts, reason },
       scores,
       matchOver: scores['0'] >= G.TARGET_SCORE || scores['1'] >= G.TARGET_SCORE,
@@ -543,7 +589,7 @@ async function rematch() {
       if (!r || !r.over || !r.result) throw new Error('The round is not settled yet');
       const seat = seatOf(r, uid);
       if (seat < 0 || r.rematch[String(seat)]) return;   // already said yes
-      tx.update(roomRef(), { rematch: { ...r.rematch, [String(seat)]: true } });
+      tx.set(roomRef(), { ...r, rematch: { ...r.rematch, [String(seat)]: true } });
     });
   } catch (e) {
     report(friendly(e));
@@ -566,9 +612,7 @@ async function startNextRound() {
       if (!r || !r.over || !r.result) return;                  // already dealt
       if (!r.rematch['0'] || !r.rematch['1']) return;           // not both ready
       const prev = r.result.winner >= 0 ? r.result.winner : 0;
-      const deal = G.startRound(r.round + 1, undefined, prev);
-      const pile = {};
-      deal.boneyard.forEach((t, i) => { pile[String(i)] = t; });
+      const seed = Math.floor(Math.random() * 2147483647) + 1;
       // A full-document set, not a partial update: with an update the rules see
       // only the touched fields in request.resource.data, so reading members or
       // scores (which this write does not change) dereferences null and the
@@ -576,22 +620,64 @@ async function startNextRound() {
       tx.set(roomRef(), {
         ...r,
         status: 'playing',
-        turn: deal.state.turn,
-        board: [], boardSize: 0, left: -1, right: -1, seq: 0, passes: 0,
+        turn: prev,
+        passes: 0,
+        boardSize: 0,
         handCounts: { '0': 7, '1': 7 },
         boneyardCount: 14,
         round: r.round + 1,
         over: false, result: null,
         rematch: { '0': false, '1': false },
+        // the deck for the new round, as a seed both clients can deal from
+        dealSeed: seed,
       });
-      tx.set(doc(db, 'rooms', code, 'hands', r.members['0']), { tiles: deal.hands[0], pips: G.pips(deal.hands[0]), round: r.round + 1 });
-      tx.set(doc(db, 'rooms', code, 'hands', r.members['1']), { tiles: deal.hands[1], pips: G.pips(deal.hands[1]), round: r.round + 1 });
-      tx.set(pileRef(), { top: 0, tiles: pile, round: r.round + 1 });
+      tx.set(boardRef(), { ...emptyBoard(), round: r.round + 1 });
+      // The hands and the pile are deliberately NOT written here. A player may
+      // only write their own hand, and this transaction is one player's — so
+      // each client seeds its own hand from dealSeed (see catchUpDeal), and
+      // whoever holds seat 0 writes the pile.
     });
   } catch (e) {
     report(friendly(e));
   } finally {
     dealing = false;
+  }
+}
+
+// A deterministic deck from a seed the room publishes, so both clients deal the
+// same tiles without one of them having to write the other's hand.
+function seededDeck(seed) {
+  let s = (seed >>> 0) || 1;
+  const rand = () => {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5; s >>>= 0;
+    return s / 4294967296;
+  };
+  return G.shuffle(G.newDeck(), rand);
+}
+
+// The deal is one player's write; the hands are each player's own. This picks up
+// the new round's tiles from what the deal published.
+let catching = false;
+async function catchUpDeal() {
+  if (catching || !room || !hand || room.status !== 'playing' || room.dealSeed == null) return;
+  if (hand.round === room.round) return;                  // already on this round
+  catching = true;
+  try {
+    const seat = mySeat();
+    if (seat < 0) return;
+    const { hands, boneyard } = G.deal(seededDeck(room.dealSeed));
+    await setDoc(handRef(), { tiles: hands[seat], pips: G.pips(hands[seat]), round: room.round });
+    if (seat === 0) {
+      const pile = {};
+      boneyard.forEach((t, i) => { pile[String(i)] = t; });
+      await setDoc(pileRef(), { top: 0, tiles: pile, round: room.round });
+    }
+  } catch (e) {
+    report(friendly(e));
+  } finally {
+    catching = false;
   }
 }
 
@@ -602,6 +688,7 @@ function leaveToHome() {
   try { localStorage.removeItem('dominoCode'); } catch {}
   history.replaceState(null, '', location.pathname);
   code = null; room = null; hand = null; quitBy = null; selected = null;
+  boardDoc = null;
   lastBoardLen = -1; lastFreshSeq = -1;
   const ov = $('#overlay');
   if (ov) ov.remove();

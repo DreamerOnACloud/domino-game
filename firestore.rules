@@ -13,8 +13,10 @@ rules_version = '2';
 //     status        'waiting' | 'playing'
 //     members       { '0': uid|'' , '1': uid|'' }
 //     turn          0 | 1
-//     boardSize     tiles currently on the board
-//     left, right   open end values, -1 while the board is empty
+//     passes        consecutive passes; two of them block the round
+//     boardSize     how many tiles are on the table — an integer ONLY, so this
+//                   document's rules stay cheap. The tiles themselves live in
+//                   private/board.
 //     handCounts    { '0': n, '1': n }
 //     boneyardCount tiles not yet drawn
 //     round         round number
@@ -23,9 +25,20 @@ rules_version = '2';
 //     result        { winner, pts, reason } | null
 //     matchOver     boolean
 //     rematch       { '0': bool, '1': bool }
+//   rooms/{code}/private/board  { board: [ {id,a,b,double,seq} ], left, right, seq }
 //   rooms/{code}/hands/{uid}    { tiles: [ {id,a,b} ], pips: n }   owner-only read
 //   rooms/{code}/private/pile   { top: n, tiles: { "0": {id,a,b}, ... } }
 //   rooms/{code}/quit/{seat}    { at }   a player left; presence ends the game
+//
+// WHY THE BOARD IS NOT IN THE ROOM DOCUMENT
+// The rules engine refuses any evaluation needing more than 1000 expressions,
+// and it fails closed. With the tile chain in the room document, every write to
+// the room — including the next-round deal, which never touches the board — paid
+// for comparing tile arrays (set membership over up to 28 tiles). That put the
+// deal over the limit and it was refused exactly as if it were a cheat. The
+// arrays and their algebra now live in their own document, so only a real move
+// pays for them, and boardSize in the room is the cheap integer that ties the
+// two documents together.
 
 service cloud.firestore {
   match /databases/{db}/documents {
@@ -48,8 +61,6 @@ service cloud.firestore {
       function seatsIntact() { return S().members['0'] == old().members['0'] && S().members['1'] == old().members['1']; }
       function handsSame() { return S().handCounts['0'] == old().handCounts['0'] && S().handCounts['1'] == old().handCounts['1']; }
       function scoresSame() { return S().scores['0'] == old().scores['0'] && S().scores['1'] == old().scores['1']; }
-      function boardSame() { return S().boardSize == old().boardSize && S().left == old().left
-        && S().right == old().right && S().board == old().board; }
       function myTurn() { return old().turn == (old().members['0'] == me() ? 0 : 1); }
       function flipped() { return S().turn == (old().turn == 0 ? 1 : 0); }
       function myHandNew() { return S().handCounts[old().members['0'] == me() ? '0' : '1']; }
@@ -59,12 +70,6 @@ service cloud.firestore {
       function handDoc(who) { return get(/databases/$(db)/documents/rooms/$(code)/hands/$(who)).data; }
       function pips0() { return handDoc(old().members['0']).pips; }
       function pips1() { return handDoc(old().members['1']).pips; }
-      function freshDeal() {
-        return S().boardSize == 0 && S().left == -1 && S().right == -1
-          && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
-          && S().boneyardCount == 14 && S().over == false && S().result == null
-          && S().rematch['0'] == false && S().rematch['1'] == false;
-      }
 
       // Anyone signed in can fetch a room by code — that is how you join.
       // No enumeration, and clients never delete a room.
@@ -76,20 +81,17 @@ service cloud.firestore {
       allow create: if signedIn()
         && S().members['0'] == me() && S().members['1'] == ''
         && S().status == 'waiting'
-        && S().boardSize == 0 && S().left == -1 && S().right == -1
-        && S().boneyardCount == 0
+        && S().boardSize == 0 && S().boneyardCount == 0
         && S().handCounts['0'] == 0 && S().handCounts['1'] == 0
         && S().over == false && S().result == null;
 
       allow update: if (
-        // (H) both seats are ready: deal the next round, scores carried over.
-        //     FIRST, and deliberately cheap: an earlier version compared whole
-        //     maps (board, rematch, seats) on every branch, and the evaluator
-        //     ran out of expression budget and refused a completely legal deal.
+        // (H) both seats are ready: deal the next round, scores carried over
         ( old().over == true && old().rematch['0'] == true && old().rematch['1'] == true
           && wasMember()
           && S().status == 'playing' && S().over == false && S().result == null
           && S().round == old().round + 1
+          && S().boardSize == 0 && S().passes == 0
           && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
           && S().boneyardCount == 14
           && S().scores['0'] == old().scores['0'] && S().scores['1'] == old().scores['1']
@@ -101,32 +103,20 @@ service cloud.firestore {
           && S().members['0'] == old().members['0'] && S().members['1'] == me()
           && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
           && S().boneyardCount == 14 && S().boardSize == 0
-          && S().left == -1 && S().right == -1
           && S().scores['0'] == 0 && S().scores['1'] == 0
           && S().over == false && S().result == null
         )
         ||
-        // (B) play a tile: board grows one, my hand shrinks one, and only ONE
-        //     end changes. Emptying my hand closes the round.
+        // (B) play a tile: the table grows by one (the tiles themselves are
+        //     checked on the board document), my hand shrinks by one, and the
+        //     turn flips. Emptying my hand closes the round.
         ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
           && S().status == 'playing'
           && S().boardSize == old().boardSize + 1
           && myHandNew() == myHandOld() - 1 && foeHandNew() == foeHandOld()
           && S().boneyardCount == old().boneyardCount
+          && S().passes == 0
           && scoresSame()
-          // the chain's ends must agree with the declared ends...
-          && S().board[0].a == S().left
-          && S().board[S().board.size() - 1].b == S().right
-          // ...and one end moves, EXCEPT for a double, whose inner half equals
-          // its outer half, so playing one leaves both ends their value
-          && ( (S().left == old().left && S().right != old().right)
-               || (S().right == old().right && S().left != old().left)
-               || (S().left == old().left && S().right == old().right)
-               || old().boardSize == 0 )
-          // the board is append/prepend-only: nothing already on the table may be
-          // altered or removed, and exactly one tile is added
-          && old().board.toSet().hasOnly(S().board.toSet())
-          && S().board.toSet().difference(old().board.toSet()).size() == 1
           && ( (S().over == false && flipped())
                || (S().over == true && myHandNew() == 0 && S().result == null) )
         )
@@ -134,16 +124,17 @@ service cloud.firestore {
         // (C) draw from the pile: same turn, my hand grows, the pile advances
         ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
           && S().status == 'playing' && S().over == false
-          && boardSame() && S().turn == old().turn
+          && S().boardSize == old().boardSize && S().turn == old().turn
           && myHandNew() == myHandOld() + 1 && foeHandNew() == foeHandOld()
           && S().boneyardCount == old().boneyardCount - 1
           && scoresSame()
         )
         ||
-        // (D) pass: only the turn moves
+        // (D) pass: only the turn and the pass counter move
         ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
           && S().status == 'playing' && S().over == false
-          && boardSame() && handsSame() && flipped()
+          && S().boardSize == old().boardSize && handsSame() && flipped()
+          && S().passes == old().passes + 1
           && S().boneyardCount == old().boneyardCount
           && scoresSame()
         )
@@ -151,7 +142,8 @@ service cloud.firestore {
         // (E) the second pass blocks the round: the round closes, unsettled
         ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
           && S().status == 'playing' && S().over == true
-          && boardSame() && handsSame()
+          && S().boardSize == old().boardSize && handsSame()
+          && S().passes == old().passes + 1
           && S().boneyardCount == old().boneyardCount
           && S().result == null && scoresSame()
         )
@@ -188,13 +180,62 @@ service cloud.firestore {
         // (G) a finished player ticks "ready" for the next round
         ( old().over == true && old().result != null && wasMember()
           && S().over == true && S().result == old().result
-          && seatsIntact() && boardSame() && handsSame()
+          && seatsIntact() && S().boardSize == old().boardSize && handsSame()
           && scoresSame() && S().round == old().round && S().turn == old().turn
           && S().boneyardCount == old().boneyardCount
           && S().rematch[seatKey()] == true && old().rematch[seatKey()] == false
           && S().rematch[foeKey()] == old().rematch[foeKey()]
         )
       );
+    }
+
+    // ------------------------------------------------ the tile chain
+    // Only ever written by a real move, the deal or a new round — never by the
+    // settle / ready / quit paths. That is the whole point of the split.
+    match /rooms/{code}/private/board {
+      function R() { return room(code); }
+      function old() { return resource.data; }
+      function S() { return request.resource.data; }
+      function mine() { return signedIn() && inRoom(code, uid()); }
+      function myTurn() { return R().turn == (R().members['0'] == uid() ? 0 : 1); }
+      function joinerWindow() {
+        return R().status == 'waiting' && R().members['0'] != '' && R().members['1'] == '';
+      }
+      function newRoundWindow() {
+        return R().over == true && R().rematch['0'] == true && R().rematch['1'] == true;
+      }
+
+      allow read: if signedIn() && inRoom(code, uid());
+      allow delete: if false;
+
+      // Dealt by the joiner, or at the start of a new round. No membership
+      // check: the joiner is not a member of the room until this very
+      // transaction lands.
+      allow create: if signedIn()
+        && S().board.size() == 0 && S().left == -1 && S().right == -1 && S().seq == 0
+        && ( joinerWindow() || newRoundWindow() );
+
+      // a new round clears the chain
+      allow update: if mine() && newRoundWindow()
+        && S().board.size() == 0 && S().left == -1 && S().right == -1 && S().seq == 0;
+
+      // a move: one tile lands, and nothing already on the table moves, is
+      // edited, or disappears
+      allow update: if mine()
+        && R().status == 'playing' && R().over == false && myTurn()
+        && S().board.size() == old().board.size() + 1
+        && S().seq == old().seq + 1
+        && old().board.toSet().hasOnly(S().board.toSet())
+        && S().board.toSet().difference(old().board.toSet()).size() == 1
+        // the declared ends really are the ends of the chain
+        && S().board[0].a == S().left
+        && S().board[S().board.size() - 1].b == S().right
+        // and exactly one end moves — except for a double, whose halves are
+        // equal, or the first tile of the round, which sets both
+        && ( (S().left == old().left && S().right != old().right)
+             || (S().right == old().right && S().left != old().left)
+             || (S().left == old().left && S().right == old().right)
+             || old().board.size() == 0 );
     }
 
     // ------------------------------------------------ a player's own hand
@@ -214,12 +255,22 @@ service cloud.firestore {
       allow read: if signedIn() && handUid == uid() && inRoom(code, uid());
       allow delete: if false;
 
-      allow create: if signedIn() && request.resource.data.tiles.size() == 7
+      // No membership check on create: the deal is written by the joiner, who is
+      // not a member of the room until that same transaction lands.
+      allow create: if signedIn()
+        && request.resource.data.tiles.size() == 7
         && ( joinerWindow() || newRoundWindow() );
 
       allow update: if signedIn() && handUid == uid() && inRoom(code, uid()) && (
         // a new round overwrites the hand wholesale
         ( newRoundWindow() && request.resource.data.tiles.size() == 7 )
+        ||
+        // the deal for the next round: this hand is still on the old round, so
+        // its owner may seed it from the round's published seed. Nobody can
+        // write anyone else's hand — which is exactly why the deal does not.
+        ( R().status == 'playing' && resource.data.round < R().round
+          && request.resource.data.round == R().round
+          && request.resource.data.tiles.size() == 7 )
         ||
         // playing a tile: exactly one of my tiles leaves my hand
         ( request.resource.data.tiles.size() == resource.data.tiles.size() - 1
@@ -270,6 +321,7 @@ service cloud.firestore {
       allow read: if signedIn() && inRoom(code, uid());
       allow delete: if false;
 
+      // the deal, written by the joiner — again, no membership check
       allow create: if signedIn() && request.resource.data.top == 0
         && request.resource.data.tiles.size() == 14
         && ( joinerWindow() || newRoundWindow() );
@@ -278,6 +330,12 @@ service cloud.firestore {
       // can never be edited — so nobody can prune tiles they don't like.
       allow update: if signedIn() && inRoom(code, uid()) && (
         ( newRoundWindow() && request.resource.data.top == 0
+          && request.resource.data.tiles.size() == 14 )
+        ||
+        // the same catch-up as the hands, for the new round's pile
+        ( R().status == 'playing' && resource.data.round < R().round
+          && request.resource.data.round == R().round
+          && request.resource.data.top == 0
           && request.resource.data.tiles.size() == 14 )
         ||
         ( R().status == 'playing'
