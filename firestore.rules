@@ -237,12 +237,12 @@ service cloud.firestore {
     // ------------------------------------------------ quitting
     // A player who leaves writes a document under their own seat key. Either
     // player can read it, so both clients see the game as over. Write-once, and
-    // only while the game is actually running.
+    // allowed while waiting for an opponent as well as mid-game (a host sitting
+    // alone needs a way out).
     match /rooms/{code}/quit/{seat} {
       allow read: if signedIn() && inRoom(code, uid());
       allow create: if signedIn()
-        && room(code).members[seat] == uid()
-        && room(code).status == 'playing';
+        && room(code).members[seat] == uid();
       allow update, delete: if false;
     }
 

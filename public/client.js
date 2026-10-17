@@ -150,6 +150,7 @@ function subscribe(newCode) {
         show('lobby');
         $('#lobby-code').textContent = code;
         $('#lobby-url').textContent = location.origin + '/' + '#' + code;
+        if (hasQuit()) overlay();      // the host left before anyone joined
         return;
       }
       render();
@@ -177,7 +178,12 @@ function subscribe(newCode) {
 
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'quit'), (snap) => {
     quitBy = snap.empty ? null : snap.docs[0].id;
-    if (room) render();
+    if (!room) return;
+    // In the lobby there is no hand yet, so render() would bail — and the room
+    // document never changes there, so this listener is the only thing that can
+    // put the "you left" card on screen.
+    if (room.status === 'waiting') { if (hasQuit()) overlay(); }
+    else render();
   }, (err) => console.error('quit listener failed', err)));
 
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'pipTotals'), (snap) => {
@@ -601,18 +607,19 @@ $('#code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('
 // Quitting ends the game for both players, so it takes a deliberate press: hold
 // QUIT for two seconds, the button filling with a darker red as it goes.
 const QUIT_HOLD_MS = 2000;
-const quitBtn = $('#btn-quit');
 let quitHold = null;
+let holdBtn = null;
 
-function startHold(e) {
+function startHold(btn, e) {
   if (e && e.preventDefault) { try { e.preventDefault(); } catch {} }
   if (quitHold) return;
   if (room && (room.over || hasQuit())) return;      // nothing left to quit
+  holdBtn = btn;
   document.documentElement.classList.add('holding-quit');
-  quitBtn.classList.add('holding');
+  btn.classList.add('holding');
   quitHold = setTimeout(() => {
     quitHold = null;
-    quitBtn.classList.remove('holding');
+    btn.classList.remove('holding');
     document.documentElement.classList.remove('holding-quit');
     quitGame();
   }, QUIT_HOLD_MS);
@@ -622,19 +629,26 @@ function cancelHold() {
   if (!quitHold) return;
   clearTimeout(quitHold);
   quitHold = null;
-  quitBtn.classList.remove('holding');               // released early: just reset
+  if (holdBtn) holdBtn.classList.remove('holding');  // released early: just reset
+  holdBtn = null;
   document.documentElement.classList.remove('holding-quit');
 }
 
-// iOS starts a text selection / callout on a long press unless touchstart's
-// default is prevented — and that selection cancels the press, so the button
-// has to claim the touch before the browser does.
-quitBtn.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
-quitBtn.addEventListener('pointerdown', startHold);
-quitBtn.addEventListener('pointerup', cancelHold);
-quitBtn.addEventListener('pointercancel', cancelHold);
-quitBtn.addEventListener('pointerleave', cancelHold);
-quitBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+function wireQuit(btn) {
+  if (!btn) return;
+  // iOS starts a text selection / callout on a long press unless touchstart's
+  // default is prevented, and that selection cancels the press.
+  btn.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+  btn.addEventListener('pointerdown', (e) => startHold(btn, e));
+  btn.addEventListener('pointerup', cancelHold);
+  btn.addEventListener('pointercancel', cancelHold);
+  btn.addEventListener('pointerleave', cancelHold);
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// one in the game top bar, one on the "waiting for the other player" screen
+wireQuit($('#btn-quit'));
+wireQuit($('#btn-quit-lobby'));
 
 // The selection menu can also be raised from a selectstart or a drag that the
 // press itself starts, so those are blocked while the button is held.
