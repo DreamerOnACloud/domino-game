@@ -1,0 +1,7 @@
+node_modules
+test
+.git
+.gitignore
+deploy.sh
+npm-debug.log*
+.DS_Store

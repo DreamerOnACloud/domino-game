@@ -1,0 +1,11 @@
+node_modules
+test
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+.gcloudignore
+deploy.sh
+npm-debug.log*
+.DS_Store
