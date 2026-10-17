@@ -181,12 +181,11 @@ function subscribe(newCode) {
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'quit'), (snap) => {
     quitBy = snap.empty ? null : snap.docs[0].id;
     if (!room) return;
-    // I left: don't strand me on a dead table, go back to the start screen.
-    if (hasQuit() && quitBy === String(mySeat())) { leaveToHome(); return; }
-    // The opponent left: in the lobby there is no hand for render() to work
-    // from and the room document never changes, so draw the card here.
-    if (room.status === 'waiting') { if (hasQuit()) overlay(); }
-    else render();
+    // Whoever left, this table is finished: no card, no dead board — straight
+    // back to the start screen. (This is also the lobby's only repaint path,
+    // since the room document never changes there.)
+    if (hasQuit()) { leaveToHome(); return; }
+    if (room.status !== 'waiting') render();
   }, (err) => console.error('quit listener failed', err)));
 
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'pipTotals'), (snap) => {
@@ -308,26 +307,13 @@ function controls(myTurn, playable) {
 function overlay() {
   const old = $('#overlay');
   if (old) old.remove();
-  if (!room || (!room.over && !hasQuit())) return;
+  if (!room || !room.over) return;   // a quit never puts a card on screen
 
   const r = room.result;
   const seat = mySeat();
   const box = el('div', 'overlay');
   box.id = 'overlay';
   const card = el('div', 'card');
-
-  // A quit ends the game with no score: no result, so no settlement runs.
-  if (hasQuit()) {
-    const iQuit = quitBy === String(seat);
-    card.appendChild(el('h3', '', iQuit ? 'You left the game' : 'Opponent left the game'));
-    card.appendChild(el('p', '', iQuit ? 'The table is closed.' : 'They quit, so this game is over.'));
-    const b = el('button', '', 'New game');
-    b.onclick = () => createRoom().catch((e) => report(friendly(e)));
-    card.appendChild(b);
-    box.appendChild(card);
-    document.body.appendChild(box);
-    return;
-  }
 
   if (!r) {
     card.appendChild(el('h3', '', 'Round over'));
