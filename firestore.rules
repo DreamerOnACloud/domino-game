@@ -268,7 +268,7 @@ service cloud.firestore {
         // the deal for the next round: this hand is still on the old round, so
         // its owner may seed it from the round's published seed. Nobody can
         // write anyone else's hand — which is exactly why the deal does not.
-        ( R().status == 'playing' && resource.data.round < R().round
+        ( R().status == 'playing' && resource.data.get('round', 0) < R().round
           && request.resource.data.round == R().round
           && request.resource.data.tiles.size() == 7 )
         ||
@@ -333,7 +333,7 @@ service cloud.firestore {
           && request.resource.data.tiles.size() == 14 )
         ||
         // the same catch-up as the hands, for the new round's pile
-        ( R().status == 'playing' && resource.data.round < R().round
+        ( R().status == 'playing' && resource.data.get('round', 0) < R().round
           && request.resource.data.round == R().round
           && request.resource.data.top == 0
           && request.resource.data.tiles.size() == 14 )

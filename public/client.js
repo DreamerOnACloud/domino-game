@@ -638,7 +638,11 @@ async function startNextRound() {
       // whoever holds seat 0 writes the pile.
     });
   } catch (e) {
-    report(friendly(e));
+    // Losing the race to deal is the normal outcome, not an error: the other
+    // client's write landed first, which is exactly why the rules refused this
+    // one. Only speak up if the round is still sitting there undealt.
+    const now = await getDoc(roomRef()).then((s) => s.data()).catch(() => null);
+    if (now && now.over && now.rematch && now.rematch['0'] && now.rematch['1']) report(friendly(e));
   } finally {
     dealing = false;
   }
@@ -675,7 +679,10 @@ async function catchUpDeal() {
       await setDoc(pileRef(), { top: 0, tiles: pile, round: room.round });
     }
   } catch (e) {
-    report(friendly(e));
+    // Same as the deal: if my hand already carries this round, someone got there
+    // first (or an earlier attempt did) and there is nothing to report.
+    const h = await getDoc(handRef()).then((s) => (s.exists() ? s.data() : null)).catch(() => null);
+    if (!h || h.round !== room.round) report(friendly(e));
   } finally {
     catching = false;
   }
