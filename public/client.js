@@ -608,10 +608,12 @@ function startHold(e) {
   if (e && e.preventDefault) { try { e.preventDefault(); } catch {} }
   if (quitHold) return;
   if (room && (room.over || hasQuit())) return;      // nothing left to quit
+  document.documentElement.classList.add('holding-quit');
   quitBtn.classList.add('holding');
   quitHold = setTimeout(() => {
     quitHold = null;
     quitBtn.classList.remove('holding');
+    document.documentElement.classList.remove('holding-quit');
     quitGame();
   }, QUIT_HOLD_MS);
 }
@@ -621,6 +623,7 @@ function cancelHold() {
   clearTimeout(quitHold);
   quitHold = null;
   quitBtn.classList.remove('holding');               // released early: just reset
+  document.documentElement.classList.remove('holding-quit');
 }
 
 // iOS starts a text selection / callout on a long press unless touchstart's
@@ -632,6 +635,12 @@ quitBtn.addEventListener('pointerup', cancelHold);
 quitBtn.addEventListener('pointercancel', cancelHold);
 quitBtn.addEventListener('pointerleave', cancelHold);
 quitBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// The selection menu can also be raised from a selectstart or a drag that the
+// press itself starts, so those are blocked while the button is held.
+for (const ev of ['selectstart', 'dragstart', 'contextmenu']) {
+  document.addEventListener(ev, (e) => { if (quitHold) e.preventDefault(); }, true);
+}
 
 // Phones and background tabs get suspended, and a suspended tab stops hearing
 // snapshots. Re-attach the listeners whenever the page comes back, so the view
