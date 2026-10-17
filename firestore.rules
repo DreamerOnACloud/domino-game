@@ -1,0 +1,262 @@
+rules_version = '2';
+
+// Dominoes on Firestore. There is no server on the Spark plan (Cloud Functions
+// needs Blaze), so these rules are the only thing between a player and an
+// illegal move. They enforce ownership and shape, and every point total is
+// verified against the losing player's own hand document.
+//
+// What they do NOT enforce is listed in README.md ("What the rules do and don't
+// enforce"). Read that before handing the room code to a stranger.
+//
+// Data model
+//   rooms/{code}
+//     status        'waiting' | 'playing'
+//     members       { '0': uid|'' , '1': uid|'' }
+//     turn          0 | 1
+//     boardSize     tiles currently on the board
+//     left, right   open end values, -1 while the board is empty
+//     handCounts    { '0': n, '1': n }
+//     boneyardCount tiles not yet drawn
+//     round         round number
+//     scores        { '0': n, '1': n }
+//     over          boolean
+//     result        { winner, pts, reason } | null
+//     matchOver     boolean
+//     rematch       { '0': bool, '1': bool }
+//   rooms/{code}/hands/{uid}    { tiles: [ {id,a,b} ], pips: n }   owner-only read
+//   rooms/{code}/private/pile   { top: n, tiles: { "0": {id,a,b}, ... } }
+
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function roomPath(code) { return /databases/$(db)/documents/rooms/$(code); }
+    function pilePath(code) { return /databases/$(db)/documents/rooms/$(code)/private/pile; }
+    function room(code) { return get(roomPath(code)).data; }
+    function inRoom(code, who) { return room(code).members['0'] == who || room(code).members['1'] == who; }
+
+    // ------------------------------------------------ the room document
+    match /rooms/{code} {
+      function old() { return resource.data; }
+      function S() { return request.resource.data; }
+      function me() { return uid(); }
+      function wasMember() { return signedIn() && (old().members['0'] == me() || old().members['1'] == me()); }
+      function seatKey() { return old().members['0'] == me() ? '0' : '1'; }
+      function foeKey() { return old().members['0'] == me() ? '1' : '0'; }
+      function seatsIntact() { return S().members['0'] == old().members['0'] && S().members['1'] == old().members['1']; }
+      function handsSame() { return S().handCounts['0'] == old().handCounts['0'] && S().handCounts['1'] == old().handCounts['1']; }
+      function scoresSame() { return S().scores['0'] == old().scores['0'] && S().scores['1'] == old().scores['1']; }
+      function boardSame() { return S().boardSize == old().boardSize && S().left == old().left
+        && S().right == old().right && S().board == old().board; }
+      function myTurn() { return old().turn == (old().members['0'] == me() ? 0 : 1); }
+      function flipped() { return S().turn == (old().turn == 0 ? 1 : 0); }
+      function myHandNew() { return S().handCounts[old().members['0'] == me() ? '0' : '1']; }
+      function myHandOld() { return old().handCounts[old().members['0'] == me() ? '0' : '1']; }
+      function foeHandNew() { return S().handCounts[old().members['0'] == me() ? '1' : '0']; }
+      function foeHandOld() { return old().handCounts[old().members['0'] == me() ? '1' : '0']; }
+      function handDoc(who) { return get(/databases/$(db)/documents/rooms/$(code)/hands/$(who)).data; }
+      function pips0() { return handDoc(old().members['0']).pips; }
+      function pips1() { return handDoc(old().members['1']).pips; }
+      function freshDeal() {
+        return S().boardSize == 0 && S().left == -1 && S().right == -1
+          && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
+          && S().boneyardCount == 14 && S().over == false && S().result == null
+          && S().rematch['0'] == false && S().rematch['1'] == false;
+      }
+
+      // Anyone signed in can fetch a room by code — that is how you join.
+      // No enumeration, and clients never delete a room.
+      allow get: if signedIn();
+      allow list: if false;
+      allow delete: if false;
+
+      // Host opens a table: seat 0 taken, seat 1 free, nothing dealt yet.
+      allow create: if signedIn()
+        && S().members['0'] == me() && S().members['1'] == ''
+        && S().status == 'waiting'
+        && S().boardSize == 0 && S().left == -1 && S().right == -1
+        && S().boneyardCount == 0
+        && S().handCounts['0'] == 0 && S().handCounts['1'] == 0
+        && S().over == false && S().result == null;
+
+      allow update: if (
+        // (A) the guest joins; the deal is written by them
+        ( old().status == 'waiting' && S().status == 'playing'
+          && S().members['0'] == old().members['0'] && S().members['1'] == me()
+          && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
+          && S().boneyardCount == 14 && S().boardSize == 0
+          && S().left == -1 && S().right == -1
+          && S().scores['0'] == 0 && S().scores['1'] == 0
+          && S().over == false && S().result == null
+        )
+        ||
+        // (B) play a tile: board grows one, my hand shrinks one, and only ONE
+        //     end changes. Emptying my hand closes the round.
+        ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
+          && S().status == 'playing'
+          && S().boardSize == old().boardSize + 1
+          && myHandNew() == myHandOld() - 1 && foeHandNew() == foeHandOld()
+          && S().boneyardCount == old().boneyardCount
+          && scoresSame()
+          && ( (S().left == old().left && S().right != old().right)
+               || (S().right == old().right && S().left != old().left)
+               || old().boardSize == 0 )
+          // the board is append/prepend-only: nothing already on the table may be
+          // altered or removed, and exactly one tile is added
+          && old().board.toSet().hasOnly(S().board.toSet())
+          && S().board.toSet().difference(old().board.toSet()).size() == 1
+          && ( (S().over == false && flipped())
+               || (S().over == true && myHandNew() == 0 && S().result == null) )
+        )
+        ||
+        // (C) draw from the pile: same turn, my hand grows, the pile advances
+        ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
+          && S().status == 'playing' && S().over == false
+          && boardSame() && S().turn == old().turn
+          && myHandNew() == myHandOld() + 1 && foeHandNew() == foeHandOld()
+          && S().boneyardCount == old().boneyardCount - 1
+          && scoresSame()
+        )
+        ||
+        // (D) pass: only the turn moves
+        ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
+          && S().status == 'playing' && S().over == false
+          && boardSame() && handsSame() && flipped()
+          && S().boneyardCount == old().boneyardCount
+          && scoresSame()
+        )
+        ||
+        // (E) the second pass blocks the round: the round closes, unsettled
+        ( old().status == 'playing' && old().over == false && wasMember() && myTurn()
+          && S().status == 'playing' && S().over == true
+          && boardSame() && handsSame()
+          && S().boneyardCount == old().boneyardCount
+          && S().result == null && scoresSame()
+        )
+        ||
+        // (F) settle a closed round, once. The arithmetic must match the hands:
+        //     a player cannot award themselves points that the hands don't
+        //     support, and a blocked claim is impossible once someone has
+        //     emptied their hand.
+        ( old().status == 'playing' && old().over == true && old().result == null
+          && wasMember() && S().over == true && S().result != null
+          && S().boardSize == old().boardSize && handsSame()
+          && S().result.pts >= 0
+          && (
+            ( S().result.reason == 'domino' && S().result.winner == 0
+              && S().handCounts['0'] == 0 && S().result.pts == pips1() )
+            || ( S().result.reason == 'domino' && S().result.winner == 1
+                 && S().handCounts['1'] == 0 && S().result.pts == pips0() )
+            || ( S().result.reason == 'blocked' && S().handCounts['0'] > 0 && S().handCounts['1'] > 0
+                 && pips0() > pips1() && S().result.winner == 0 && S().result.pts == pips0() - pips1() )
+            || ( S().result.reason == 'blocked' && S().handCounts['0'] > 0 && S().handCounts['1'] > 0
+                 && pips1() > pips0() && S().result.winner == 1 && S().result.pts == pips1() - pips0() )
+            || ( S().result.reason == 'blocked' && S().handCounts['0'] > 0 && S().handCounts['1'] > 0
+                 && pips0() == pips1() && S().result.winner == -1 && S().result.pts == 0 )
+          )
+          && (
+            ( S().result.winner == 0 && S().scores['0'] == old().scores['0'] + S().result.pts
+              && S().scores['1'] == old().scores['1'] )
+            || ( S().result.winner == 1 && S().scores['1'] == old().scores['1'] + S().result.pts
+                 && S().scores['0'] == old().scores['0'] )
+            || ( S().result.winner == -1 && scoresSame() )
+          )
+        )
+        ||
+        // (G) a finished player ticks "ready" for the next round
+        ( old().over == true && old().result != null && wasMember()
+          && S().over == true && S().result == old().result
+          && seatsIntact() && boardSame() && handsSame()
+          && scoresSame() && S().round == old().round && S().turn == old().turn
+          && S().boneyardCount == old().boneyardCount
+          && S().rematch[seatKey()] == true && old().rematch[seatKey()] == false
+          && S().rematch[foeKey()] == old().rematch[foeKey()]
+        )
+        ||
+        // (H) both ready: deal the next round, scores carried over
+        ( old().over == true && old().rematch['0'] == true && old().rematch['1'] == true
+          && wasMember() && S().status == 'playing' && freshDeal()
+          && seatsIntact() && scoresSame() && S().round == old().round + 1
+        )
+      );
+    }
+
+    // ------------------------------------------------ a player's own hand
+    match /rooms/{code}/hands/{handUid} {
+      function R() { return room(code); }
+      function P() { return get(pilePath(code)).data; }
+      function joinerWindow() {
+        // the deal happens while the table is still waiting for the guest
+        return R().status == 'waiting' && R().members['0'] != '' && R().members['1'] == '';
+      }
+      function newRoundWindow() {
+        return R().over == true && R().rematch['0'] == true && R().rematch['1'] == true;
+      }
+      function pileTop() { return P().tiles[string(P().top)]; }
+
+      // Only the owner can read their hand. The other player sees a count.
+      allow read: if signedIn() && handUid == uid() && inRoom(code, uid());
+      allow delete: if false;
+
+      allow create: if signedIn() && request.resource.data.tiles.size() == 7
+        && ( joinerWindow() || newRoundWindow() );
+
+      allow update: if signedIn() && handUid == uid() && inRoom(code, uid()) && (
+        // a new round overwrites the hand wholesale
+        ( newRoundWindow() && request.resource.data.tiles.size() == 7 )
+        ||
+        // playing a tile: exactly one of my tiles leaves my hand
+        ( request.resource.data.tiles.size() == resource.data.tiles.size() - 1
+          && request.resource.data.tiles.toSet().hasOnly(resource.data.tiles.toSet()) )
+        ||
+        // drawing: exactly the top tile of the pile joins my hand
+        ( request.resource.data.tiles.size() == resource.data.tiles.size() + 1
+          && request.resource.data.tiles.toSet().difference(resource.data.tiles.toSet()).hasOnly([pileTop()]) )
+      );
+    }
+
+    // ------------------------------------------------ published pip totals
+    // Needed for a blocked round: neither client can read the other's hand, so
+    // each player publishes their own total (verified against their own hand
+    // document) and either player can then settle the round.
+    match /rooms/{code}/pipTotals/{who} {
+      function ownHand() { return get(/databases/$(db)/documents/rooms/$(code)/hands/$(who)).data; }
+      allow read: if signedIn() && inRoom(code, uid());
+      allow write: if signedIn() && who == uid() && inRoom(code, uid())
+        && request.resource.data.pips == ownHand().pips;
+    }
+
+    // ------------------------------------------------ the undrawn pile
+    match /rooms/{code}/private/pile {
+      function R() { return room(code); }
+      function joinerWindow() {
+        return R().status == 'waiting' && R().members['0'] != '' && R().members['1'] == '';
+      }
+      function newRoundWindow() {
+        return R().over == true && R().rematch['0'] == true && R().rematch['1'] == true;
+      }
+
+      // Both players can read the pile, because the client that draws has to
+      // know which tile it drew. Draws are forced and always take the top tile
+      // (enforced below), so seeing the pile cannot change a decision.
+      allow read: if signedIn() && inRoom(code, uid());
+      allow delete: if false;
+
+      allow create: if signedIn() && request.resource.data.top == 0
+        && request.resource.data.tiles.size() == 14
+        && ( joinerWindow() || newRoundWindow() );
+
+      // A pointer into an append-only map: it advances by one, and its contents
+      // can never be edited — so nobody can prune tiles they don't like.
+      allow update: if signedIn() && inRoom(code, uid()) && (
+        ( newRoundWindow() && request.resource.data.top == 0
+          && request.resource.data.tiles.size() == 14 )
+        ||
+        ( R().status == 'playing'
+          && request.resource.data.top == resource.data.top + 1
+          && request.resource.data.tiles == resource.data.tiles )
+      );
+    }
+  }
+}
