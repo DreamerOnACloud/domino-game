@@ -569,7 +569,12 @@ async function startNextRound() {
       const deal = G.startRound(r.round + 1, undefined, prev);
       const pile = {};
       deal.boneyard.forEach((t, i) => { pile[String(i)] = t; });
-      tx.update(roomRef(), {
+      // A full-document set, not a partial update: with an update the rules see
+      // only the touched fields in request.resource.data, so reading members or
+      // scores (which this write does not change) dereferences null and the
+      // whole evaluation fails.
+      tx.set(roomRef(), {
+        ...r,
         status: 'playing',
         turn: deal.state.turn,
         board: [], boardSize: 0, left: -1, right: -1, seq: 0, passes: 0,
