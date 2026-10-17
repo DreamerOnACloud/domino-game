@@ -82,6 +82,20 @@ service cloud.firestore {
         && S().over == false && S().result == null;
 
       allow update: if (
+        // (H) both seats are ready: deal the next round, scores carried over.
+        //     FIRST, and deliberately cheap: an earlier version compared whole
+        //     maps (board, rematch, seats) on every branch, and the evaluator
+        //     ran out of expression budget and refused a completely legal deal.
+        ( old().over == true && old().rematch['0'] == true && old().rematch['1'] == true
+          && wasMember()
+          && S().status == 'playing' && S().over == false && S().result == null
+          && S().round == old().round + 1
+          && S().handCounts['0'] == 7 && S().handCounts['1'] == 7
+          && S().boneyardCount == 14
+          && S().scores['0'] == old().scores['0'] && S().scores['1'] == old().scores['1']
+          && S().members['0'] == old().members['0'] && S().members['1'] == old().members['1']
+        )
+        ||
         // (A) the guest joins; the deal is written by them
         ( old().status == 'waiting' && S().status == 'playing'
           && S().members['0'] == old().members['0'] && S().members['1'] == me()
@@ -179,12 +193,6 @@ service cloud.firestore {
           && S().boneyardCount == old().boneyardCount
           && S().rematch[seatKey()] == true && old().rematch[seatKey()] == false
           && S().rematch[foeKey()] == old().rematch[foeKey()]
-        )
-        ||
-        // (H) both ready: deal the next round, scores carried over
-        ( old().over == true && old().rematch['0'] == true && old().rematch['1'] == true
-          && wasMember() && S().status == 'playing' && freshDeal()
-          && seatsIntact() && scoresSame() && S().round == old().round + 1
         )
       );
     }

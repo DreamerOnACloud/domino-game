@@ -155,6 +155,8 @@ function subscribe(newCode) {
       }
       render();
       if (room.over && !room.result && !hasQuit()) settle();
+      // both players ready to continue: deal the next round
+      if (room.over && room.result && !hasQuit() && room.rematch['0'] && room.rematch['1']) startNextRound();
     },
     (err) => {
       // A listener that dies silently is exactly how a view goes stale.
@@ -338,8 +340,10 @@ function overlay() {
         : 'Both players blocked. Lowest pip count wins.'));
     card.appendChild(el('div', 'scroll', `Score  —  You ${room.scores[String(seat)]} · Opp ${room.scores[String(1 - seat)]}`));
     if (room.matchOver) card.appendChild(el('p', '', room.scores[String(seat)] >= G.TARGET_SCORE ? '🏆 Match won!' : 'Match lost.'));
+    const iAmReady = !!room.rematch[String(seat)];
     const b = el('button', '', room.matchOver ? 'New match' : 'Next round');
     b.onclick = () => rematch();
+    if (iAmReady) { b.disabled = true; b.textContent = 'Waiting for the other player…'; }
     card.appendChild(b);
     const ready = [room.rematch['0'], room.rematch['1']].filter(Boolean).length;
     if (ready) card.appendChild(el('p', '', `${ready}/2 ready`));
@@ -541,15 +545,31 @@ async function rematch() {
     await runTransaction(db, async (tx) => {
       const rs = await tx.get(roomRef());
       const r = rs.data();
+      if (!r || !r.over || !r.result) throw new Error('The round is not settled yet');
       const seat = seatOf(r, uid);
-      if (!r.over || !r.result) throw new Error('The round is not settled yet');
+      if (seat < 0 || r.rematch[String(seat)]) return;   // already said yes
+      tx.update(roomRef(), { rematch: { ...r.rematch, [String(seat)]: true } });
+    });
+  } catch (e) {
+    report(friendly(e));
+  } finally {
+    busy = false;
+  }
+}
 
-      if (!r.rematch[String(seat)]) {
-        tx.update(roomRef(), { rematch: { ...r.rematch, [String(seat)]: true } });
-        return;
-      }
-      if (!r.rematch['0'] || !r.rematch['1']) return;   // waiting on the other seat
-
+// The tap only says "I am ready". Once both seats are ready the round starts by
+// itself — previously the deal happened inside the tap handler, but only for a
+// player who had *already* tapped, so with both at "ready" nobody ever dealt.
+let dealing = false;
+async function startNextRound() {
+  if (dealing) return;
+  dealing = true;
+  try {
+    await runTransaction(db, async (tx) => {
+      const rs = await tx.get(roomRef());
+      const r = rs.data();
+      if (!r || !r.over || !r.result) return;                  // already dealt
+      if (!r.rematch['0'] || !r.rematch['1']) return;           // not both ready
       const prev = r.result.winner >= 0 ? r.result.winner : 0;
       const deal = G.startRound(r.round + 1, undefined, prev);
       const pile = {};
@@ -571,7 +591,7 @@ async function rematch() {
   } catch (e) {
     report(friendly(e));
   } finally {
-    busy = false;
+    dealing = false;
   }
 }
 
