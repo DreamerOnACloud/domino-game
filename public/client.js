@@ -598,21 +598,36 @@ $('#btn-join').onclick = () => {
 };
 $('#code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-join').click(); });
 
-// Quitting ends the game for both players, so it takes two taps.
-let quitTimer = null;
-$('#btn-quit').onclick = () => {
-  const b = $('#btn-quit');
-  if (b.dataset.armed === '1') {
-    clearTimeout(quitTimer);
-    b.dataset.armed = '';
-    b.textContent = '✕';
+// Quitting ends the game for both players, so it takes a deliberate press: hold
+// QUIT for two seconds, the button filling with a darker red as it goes.
+const QUIT_HOLD_MS = 2000;
+const quitBtn = $('#btn-quit');
+let quitHold = null;
+
+function startHold(e) {
+  if (e && e.cancelable) e.preventDefault();
+  if (quitHold) return;
+  if (room && (room.over || hasQuit())) return;      // nothing left to quit
+  quitBtn.classList.add('holding');
+  quitHold = setTimeout(() => {
+    quitHold = null;
+    quitBtn.classList.remove('holding');
     quitGame();
-    return;
-  }
-  b.dataset.armed = '1';
-  b.textContent = 'Quit?';
-  quitTimer = setTimeout(() => { b.dataset.armed = ''; b.textContent = '✕'; }, 3000);
-};
+  }, QUIT_HOLD_MS);
+}
+
+function cancelHold() {
+  if (!quitHold) return;
+  clearTimeout(quitHold);
+  quitHold = null;
+  quitBtn.classList.remove('holding');               // released early: just reset
+}
+
+quitBtn.addEventListener('pointerdown', startHold);
+quitBtn.addEventListener('pointerup', cancelHold);
+quitBtn.addEventListener('pointercancel', cancelHold);
+quitBtn.addEventListener('pointerleave', cancelHold);
+quitBtn.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Phones and background tabs get suspended, and a suspended tab stops hearing
 // snapshots. Re-attach the listeners whenever the page comes back, so the view
