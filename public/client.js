@@ -414,10 +414,15 @@ async function playTile(tileId, end) {
       const res = G.play(st, hs.data().tiles, seat, tileId, end);
       if (res.err) throw new Error(res.err);
 
+      // Playing your last tile ends the round: play() reports it, and only the
+      // caller knows whether the hand it was given is now empty.
+      const dominoed = res.dominoed === true;
+      const over = dominoed || res.state.over;
+
       tx.update(roomRef(), {
         ...toDoc(res.state),
         handCounts: { ...r.handCounts, [String(seat)]: res.hand.length },
-        over: res.state.over,
+        over,
         result: res.state.roundResult,
         scores: { '0': res.state.scores[0], '1': res.state.scores[1] },
         matchOver: res.state.matchOver,
