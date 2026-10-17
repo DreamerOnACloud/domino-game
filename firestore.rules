@@ -99,8 +99,14 @@ service cloud.firestore {
           && myHandNew() == myHandOld() - 1 && foeHandNew() == foeHandOld()
           && S().boneyardCount == old().boneyardCount
           && scoresSame()
+          // the chain's ends must agree with the declared ends...
+          && S().board[0].a == S().left
+          && S().board[S().board.size() - 1].b == S().right
+          // ...and one end moves, EXCEPT for a double, whose inner half equals
+          // its outer half, so playing one leaves both ends their value
           && ( (S().left == old().left && S().right != old().right)
                || (S().right == old().right && S().left != old().left)
+               || (S().left == old().left && S().right == old().right)
                || old().boardSize == 0 )
           // the board is append/prepend-only: nothing already on the table may be
           // altered or removed, and exactly one tile is added
