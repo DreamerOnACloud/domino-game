@@ -605,7 +605,7 @@ const quitBtn = $('#btn-quit');
 let quitHold = null;
 
 function startHold(e) {
-  if (e && e.cancelable) e.preventDefault();
+  if (e && e.preventDefault) { try { e.preventDefault(); } catch {} }
   if (quitHold) return;
   if (room && (room.over || hasQuit())) return;      // nothing left to quit
   quitBtn.classList.add('holding');
@@ -623,6 +623,10 @@ function cancelHold() {
   quitBtn.classList.remove('holding');               // released early: just reset
 }
 
+// iOS starts a text selection / callout on a long press unless touchstart's
+// default is prevented — and that selection cancels the press, so the button
+// has to claim the touch before the browser does.
+quitBtn.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
 quitBtn.addEventListener('pointerdown', startHold);
 quitBtn.addEventListener('pointerup', cancelHold);
 quitBtn.addEventListener('pointercancel', cancelHold);
