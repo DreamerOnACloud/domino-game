@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b1f16" />
+<title>Dominoes</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Home -->
+  <section id="home" class="screen active">
+    <h1>Dominoes</h1>
+    <p class="sub">Two players. One code.</p>
+    <button id="btn-create" class="big primary">Create game</button>
+    <div class="or">or</div>
+    <div class="joinrow">
+      <input id="code-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off" />
+      <button id="btn-join">Join</button>
+    </div>
+    <p id="home-msg" class="msg"></p>
+  </section>
+
+  <!-- Lobby -->
+  <section id="lobby" class="screen">
+    <h2>Share this code</h2>
+    <div id="lobby-code" class="code">------</div>
+    <button id="btn-copy" class="ghost">Copy invite link</button>
+    <p id="lobby-url" class="lobby-url"></p>
+    <p class="waiting"><span class="dot"></span> Waiting for the other player…</p>
+  </section>
+
+  <!-- Game -->
+  <section id="game" class="screen">
+    <header class="topbar">
+      <div class="score you"><span class="lbl">You</span><b id="score-you">0</b></div>
+      <div class="mid">
+        <div id="turn-line" class="turn">—</div>
+        <div class="meta"><span id="round-no">Round 1</span> · <span id="bones">bones 14</span></div>
+      </div>
+      <div class="score opp"><span class="lbl">Opp</span><b id="score-opp">0</b></div>
+    </header>
+
+    <div id="opp-hand" class="opp-hand"></div>
+
+    <div id="board-wrap">
+      <div id="board" class="board"></div>
+    </div>
+
+    <div id="controls" class="controls"></div>
+
+    <div id="hand" class="hand"></div>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+</div>
+<script type="module" src="client.js"></script>
+</body>
+</html>
