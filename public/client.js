@@ -179,9 +179,10 @@ function subscribe(newCode) {
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'quit'), (snap) => {
     quitBy = snap.empty ? null : snap.docs[0].id;
     if (!room) return;
-    // In the lobby there is no hand yet, so render() would bail — and the room
-    // document never changes there, so this listener is the only thing that can
-    // put the "you left" card on screen.
+    // I left: don't strand me on a dead table, go back to the start screen.
+    if (hasQuit() && quitBy === String(mySeat())) { leaveToHome(); return; }
+    // The opponent left: in the lobby there is no hand for render() to work
+    // from and the room document never changes, so draw the card here.
     if (room.status === 'waiting') { if (hasQuit()) overlay(); }
     else render();
   }, (err) => console.error('quit listener failed', err)));
@@ -567,6 +568,20 @@ async function rematch() {
   } finally {
     busy = false;
   }
+}
+
+/** Drop the table completely and go back to create/join. */
+function leaveToHome() {
+  for (const u of unsubs) u();
+  unsubs = [];
+  try { localStorage.removeItem('dominoCode'); } catch {}
+  history.replaceState(null, '', location.pathname);
+  code = null; room = null; hand = null; quitBy = null; selected = null;
+  lastBoardLen = -1; lastFreshSeq = -1;
+  const ov = $('#overlay');
+  if (ov) ov.remove();
+  hideError();
+  show('home');
 }
 
 async function quitGame() {
