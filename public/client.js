@@ -72,6 +72,8 @@ const pileRef = () => doc(db, 'rooms', code, 'private', 'pile');
 const seatOf = (r, u) => (r && r.members['0'] === u ? 0 : r && r.members['1'] === u ? 1 : -1);
 const mySeat = () => seatOf(room, uid);
 const oppSeat = () => 1 - mySeat();
+let quitBy = null;                  // '0' | '1' | null — the seat that left
+const hasQuit = () => quitBy !== null;
 
 /** the pure-module shape, rebuilt from the room document */
 function stateFrom(r) {
@@ -123,6 +125,7 @@ function subscribe(newCode) {
   for (const u of unsubs) u();
   unsubs = [];
   code = newCode;
+  quitBy = null;
   localStorage.setItem('dominoCode', code);
   history.replaceState(null, '', '#' + code);
 
@@ -150,7 +153,7 @@ function subscribe(newCode) {
         return;
       }
       render();
-      if (room.over && !room.result) settle();
+      if (room.over && !room.result && !hasQuit()) settle();
     },
     (err) => {
       // A listener that dies silently is exactly how a view goes stale.
@@ -172,6 +175,11 @@ function subscribe(newCode) {
     },
   ));
 
+  unsubs.push(onSnapshot(collection(db, 'rooms', code, 'quit'), (snap) => {
+    quitBy = snap.empty ? null : snap.docs[0].id;
+    if (room) render();
+  }, (err) => console.error('quit listener failed', err)));
+
   unsubs.push(onSnapshot(collection(db, 'rooms', code, 'pipTotals'), (snap) => {
     extra.pt = {};
     snap.forEach((d) => { extra.pt[d.id] = d.data().pips; });
@@ -192,10 +200,12 @@ function render() {
   $('#round-no').textContent = 'Round ' + (room.round || 1);
   $('#bones').textContent = 'bones ' + (room.boneyardCount || 0);
 
-  const myTurn = st.turn === seat && !st.over;
-  $('#turn-line').textContent = st.over
-    ? 'Round over'
-    : myTurn ? 'Your turn' : "Opponent's turn";
+  const myTurn = st.turn === seat && !st.over && !hasQuit();
+  $('#turn-line').textContent = hasQuit()
+    ? 'Game over'
+    : st.over
+      ? 'Round over'
+      : myTurn ? 'Your turn' : "Opponent's turn";
   $('#turn-line').style.color = myTurn ? '#e0b559' : '';
 
   const oh = $('#opp-hand');
@@ -221,7 +231,7 @@ function render() {
     });
   }
 
-  const playable = !st.over && st.turn === seat ? G.playableIds(st, hand.tiles) : [];
+  const playable = !st.over && !hasQuit() && st.turn === seat ? G.playableIds(st, hand.tiles) : [];
   const hd = $('#hand');
   hd.innerHTML = '';
   for (const t of hand.tiles) {
@@ -244,7 +254,7 @@ function render() {
 function controls(myTurn, playable) {
   const c = $('#controls');
   c.innerHTML = '';
-  if (!room || room.over) return;
+  if (!room || room.over || hasQuit()) return;
 
   if (selected) {
     const ends = [];
@@ -289,13 +299,26 @@ function controls(myTurn, playable) {
 function overlay() {
   const old = $('#overlay');
   if (old) old.remove();
-  if (!room || !room.over) return;
+  if (!room || (!room.over && !hasQuit())) return;
 
   const r = room.result;
   const seat = mySeat();
   const box = el('div', 'overlay');
   box.id = 'overlay';
   const card = el('div', 'card');
+
+  // A quit ends the game with no score: no result, so no settlement runs.
+  if (hasQuit()) {
+    const iQuit = quitBy === String(seat);
+    card.appendChild(el('h3', '', iQuit ? 'You left the game' : 'Opponent left the game'));
+    card.appendChild(el('p', '', iQuit ? 'The table is closed.' : 'They quit, so this game is over.'));
+    const b = el('button', '', 'New game');
+    b.onclick = () => createRoom().catch((e) => report(friendly(e)));
+    card.appendChild(b);
+    box.appendChild(card);
+    document.body.appendChild(box);
+    return;
+  }
 
   if (!r) {
     card.appendChild(el('h3', '', 'Round over'));
@@ -467,7 +490,7 @@ async function settle() {
 
 let settling = false;
 async function maybeSettle() {
-  if (settling || !room || !room.over || room.result) return;
+  if (settling || !room || !room.over || room.result || hasQuit()) return;
   const p0 = extra.pt[room.members['0']];
   const p1 = extra.pt[room.members['1']];
   if (p0 == null || p1 == null) return;
@@ -540,6 +563,20 @@ async function rematch() {
   }
 }
 
+async function quitGame() {
+  if (busy || !room || room.over || hasQuit()) return;
+  const seat = mySeat();
+  if (seat < 0) return;
+  busy = true;
+  try {
+    await setDoc(doc(db, 'rooms', code, 'quit', String(seat)), { at: Date.now() });
+  } catch (e) {
+    report(friendly(e));
+  } finally {
+    busy = false;
+  }
+}
+
 function friendly(e) {
   const m = (e && e.message) || String(e);
   if (/permission|PERMISSION_DENIED|insufficient/i.test(m)) return 'Blocked by the game rules — that move is not allowed';
@@ -560,6 +597,22 @@ $('#btn-join').onclick = () => {
   joinRoom(c).catch((e) => report(friendly(e)));
 };
 $('#code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-join').click(); });
+
+// Quitting ends the game for both players, so it takes two taps.
+let quitTimer = null;
+$('#btn-quit').onclick = () => {
+  const b = $('#btn-quit');
+  if (b.dataset.armed === '1') {
+    clearTimeout(quitTimer);
+    b.dataset.armed = '';
+    b.textContent = '✕';
+    quitGame();
+    return;
+  }
+  b.dataset.armed = '1';
+  b.textContent = 'Quit?';
+  quitTimer = setTimeout(() => { b.dataset.armed = ''; b.textContent = '✕'; }, 3000);
+};
 
 // Phones and background tabs get suspended, and a suspended tab stops hearing
 // snapshots. Re-attach the listeners whenever the page comes back, so the view

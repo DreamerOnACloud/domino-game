@@ -25,6 +25,7 @@ rules_version = '2';
 //     rematch       { '0': bool, '1': bool }
 //   rooms/{code}/hands/{uid}    { tiles: [ {id,a,b} ], pips: n }   owner-only read
 //   rooms/{code}/private/pile   { top: n, tiles: { "0": {id,a,b}, ... } }
+//   rooms/{code}/quit/{seat}    { at }   a player left; presence ends the game
 
 service cloud.firestore {
   match /databases/{db}/documents {
@@ -231,6 +232,18 @@ service cloud.firestore {
       allow read: if signedIn() && inRoom(code, uid());
       allow write: if signedIn() && who == uid() && inRoom(code, uid())
         && request.resource.data.pips == ownHand().pips;
+    }
+
+    // ------------------------------------------------ quitting
+    // A player who leaves writes a document under their own seat key. Either
+    // player can read it, so both clients see the game as over. Write-once, and
+    // only while the game is actually running.
+    match /rooms/{code}/quit/{seat} {
+      allow read: if signedIn() && inRoom(code, uid());
+      allow create: if signedIn()
+        && room(code).members[seat] == uid()
+        && room(code).status == 'playing';
+      allow update, delete: if false;
     }
 
     // ------------------------------------------------ the undrawn pile

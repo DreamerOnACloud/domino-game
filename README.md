@@ -129,6 +129,7 @@ rooms/{code}                    status, members, turn, board, ends, handCounts,
 rooms/{code}/hands/{uid}        { tiles: [ {id,a,b} ], pips }     owner-only
 rooms/{code}/private/pile       { top, tiles: { "0": {id,a,b}, ... } }
 rooms/{code}/pipTotals/{uid}    { pips }   published to settle a blocked round
+rooms/{code}/quit/{seat}        { at }     a player left; its presence ends the game
 ```
 
 ### What the rules do and don't enforce
