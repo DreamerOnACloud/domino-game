@@ -1,18 +1,13 @@
-// Firebase web config.
-//
-// In production this is public information (it ships in the page) — it is NOT a
-// secret, and access control lives entirely in firestore.rules.
-//
-// Fill these in from the Firebase console: Project settings → Your apps → Web
-// app → SDK setup and configuration. Until then the app still runs against the
-// local emulator, which ignores these values.
+// Firebase web config (public information — it ships in the page).
+// Access control lives in firestore.rules, never in these values.
 export const FIREBASE_CONFIG = {
-  apiKey: 'REPLACE_ME',
-  authDomain: 'REPLACE_ME.firebaseapp.com',
-  projectId: 'dominoes-demo',
-  appId: 'REPLACE_ME',
+  apiKey: "AIzaSyBA3V3vIGz0IYoiWurafeLTNuosf73Qud8",
+  authDomain: "domino-game-f61dc.firebaseapp.com",
+  projectId: "domino-game-f61dc",
+  appId: "1:823508963902:web:5d79b82645e60e49b8376f",
+  messagingSenderId: "823508963902",
+  storageBucket: "domino-game-f61dc.firebasestorage.app",
 };
 
-// Set to false to force the emulator off (e.g. testing against production from
-// localhost). By default, localhost means the emulators.
+// localhost means the emulators; the deployed site uses real Firebase.
 export const USE_EMULATORS = ['localhost', '127.0.0.1', ''].includes(location.hostname);

@@ -240,7 +240,13 @@ function controls(myTurn, playable) {
     }
     for (const e of ends) {
       const b = el('button', e.cls || '', e.label);
-      b.onclick = () => { const t = selected; selected = null; playTile(t.id, e.end); };
+      b.onclick = () => {
+        const t = selected;
+        if (!t) return;           // second tap before the re-render landed
+        selected = null;
+        b.disabled = true;
+        playTile(t.id, e.end);
+      };
       c.appendChild(b);
     }
     const cancel = el('button', 'ghost', 'Cancel');
