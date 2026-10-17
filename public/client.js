@@ -327,9 +327,12 @@ function overlay() {
     card.appendChild(el('div', 'scroll', `Score  —  You ${room.scores[String(seat)]} · Opp ${room.scores[String(1 - seat)]}`));
     if (room.matchOver) card.appendChild(el('p', '', room.scores[String(seat)] >= G.TARGET_SCORE ? '🏆 Match won!' : 'Match lost.'));
     const iAmReady = !!room.rematch[String(seat)];
+    const bothReady = iAmReady && !!room.rematch[String(1 - seat)];
     const b = el('button', '', room.matchOver ? 'New match' : 'Next round');
     b.onclick = () => rematch();
-    if (iAmReady) { b.disabled = true; b.textContent = 'Waiting for the other player…'; }
+    // "waiting for the other player" is a lie once the other player has said yes
+    if (bothReady) { b.disabled = true; b.textContent = 'Starting the next round…'; }
+    else if (iAmReady) { b.disabled = true; b.textContent = 'Waiting for the other player…'; }
     card.appendChild(b);
     const ready = [room.rematch['0'], room.rematch['1']].filter(Boolean).length;
     if (ready) card.appendChild(el('p', '', `${ready}/2 ready`));
